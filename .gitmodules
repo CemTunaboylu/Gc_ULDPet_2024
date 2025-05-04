@@ -1,0 +1,3 @@
+[submodule "MONAI"]
+	path = MONAI
+	url = https://github.com/Project-MONAI/MONAI.git
