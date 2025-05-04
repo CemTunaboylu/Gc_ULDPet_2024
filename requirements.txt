@@ -1,0 +1,15 @@
+einops==0.8.1
+filelock==3.18.0
+fsspec==2025.3.2
+Jinja2==3.1.6
+MarkupSafe==3.0.2
+-e git+https://github.com/Project-MONAI/MONAI.git@b58e883c887e0f99d382807550654c44d94f47bd#egg=monai
+mpmath==1.3.0
+networkx==3.4.2
+numpy==2.2.5
+packaging==25.0
+psutil==7.0.0
+setuptools==80.1.0
+sympy==1.14.0
+torch==2.7.0
+typing_extensions==4.13.2
