@@ -1,183 +1,149 @@
-from typing import Tuple
-from enum import Enum
+import abc
+from ast import Not
+from functools import partial
+from typing import Optional, Tuple
 
+from rust_enum import Case, enum
 import torch
 from torch import nn
 F = nn.functional
 
-from sys import path 
+def dim_assertion(dim:int, allowed_dims = (1,2,3)):
+    if dim not in allowed_dims:
+        raise ValueError(f"dim must be in {allowed_dims}.")
 
-from MONAI.monai.networks.layers.factories import Act,  Dropout, Norm, Pool, split_args
-from MONAI.monai.utils import has_option
+class IntoLayer(abc.ABC):
+    @abc.abstractmethod
+    def get_layer(self)->nn.Module:
+        raise NotImplementedError()
 
-# from monai.networks.layers import Dropout, Act, Norm
+@enum
+class Activation(IntoLayer):
+    ELU = Case(inplace=bool)
+    LRELU = Case(negative_slope=float, inplace=bool) # Leaky ReLU
+    PRELU = Case(num_parameters=int, init=float)
+    RELU = Case(inplace=bool)
+    SWISH = Case(inplace=bool) # SiLU
+    MEMSWISH = Case(inplace=bool) # Memory-efficient SiLU
 
-def get_activation(activation:str):
-    a = None
-    if activation == 'relu':
-        a= nn.ReLU(inplace=True)
-    elif activation == 'leaky_relu':
-        a= nn.LeakyReLU(inplace=True)
-    elif activation == 'elu':
-        a= nn.ELU(inplace=True)
-    elif activation == 'prelu':
-        a= nn.PReLU()
-    elif activation == 'swish':
-        a= nn.SiLU(inplace=True)  # Swish activation
-    else:
-        raise ValueError(f"Unsupported activation: {activation}")
-    return a
+    @staticmethod
+    def elu(inplace=True):
+        return Activation.ELU(inplace=inplace)
+    @staticmethod
+    def lrelu(negative_slope=0.2, inplace=True):
+        return Activation.LRELU(negative_slope=negative_slope, inplace=inplace)
+    @staticmethod
+    def prelu(num_parameters=1, init=0.25):
+        return Activation.PRELU(num_parameters=num_parameters, init=init)
+    @staticmethod
+    def relu(inplace=True):
+        return Activation.RELU(inplace=inplace)
+    @staticmethod
+    def swish(inplace=True):
+        return Activation.SWISH(inplace=inplace)
+    @staticmethod
+    def memswish(inplace=True):
+        return Activation.MEMSWISH(inplace=inplace)
 
-class Activation(Enum):
-    LRELU = 0
-    PRELU = 1
-    RELU = 2
-    ELU = 3
-    SWISH = 4
+    def get_layer(self)->nn.Module:
+        a : nn.Module 
+        match self:
+            case Activation.ELU(inplace): 
+                a = nn.ELU(inplace=inplace)
+            case Activation.LRELU(negative_slope, inplace):
+                a = nn.LeakyReLU(negative_slope=negative_slope, inplace=inplace)
+            case Activation.PRELU(num_parameters, init):
+                a = nn.PReLU(num_parameters=num_parameters, init=init)
+            case Activation.RELU(inplace):
+                a = nn.ReLU(inplace=inplace)
+            case Activation.SWISH(inplace):
+                a = nn.SiLU(inplace=inplace)  # Swish activation
+            case Activation.MEMSWISH(inplace):
+                a = nn.Mish(inplace=inplace)
+        return a
 
-    def __str__(self):
-        return self.name
+@enum
+class Normalization(IntoLayer):
+    INSTANCE = Case(dim=int, num_features=int, affine=bool)
+    BATCH = Case(dim=int, num_features=int)
+    # INSTANCE_NVFUSER = Case(dim=int, num_features=int, affine=bool)
+    LOCALRESPONSE = Case(size=int, alpha=float, beta=float, k=float) 
+    LAYER = Case(normalized_shape=list, eps=float, elementwise_affine=bool)
+    GROUP = Case(num_groups=int, num_channels=int, affine=bool)
+    SYNCBATCH = Case(num_features=int, eps=float, momentum=float, affine=bool, track_running_stats=bool)
 
-    def activation(self, negative_slope=0.2, num_parameters=1, init=0.25)->Tuple:
-        a = [("LeakyReLU", {"negative_slope": negative_slope, "inplace": True}),
-             ("PReLU", {"num_parameters": num_parameters, "init": init}),
-             "ReLU"]
-        if self.value >= len(a):
-            raise NotImplementedError(f"activation {self} is not implemented")
+    @staticmethod
+    def instance(dim:int, num_features:int, affine=True):
+        return Normalization.INSTANCE(dim=dim, num_features=num_features, affine=affine)
+    @staticmethod
+    def batch(dim:int, num_features:int):
+        return Normalization.BATCH(dim=dim, num_features=num_features)
+    # @staticmethod
+    # def instance_nvfuser(dim:int, num_features:int, affine=True):
+    #     return Normalization.INSTANCE_NVFUSER(dim=dim, num_features=num_features, affine=affine)
+    @staticmethod
+    def localresponse(size=5, alpha=0.0001, beta=0.75, k=2.0):
+        return Normalization.LOCALRESPONSE(size=size, alpha=alpha, beta=beta, k=k)
+    @staticmethod
+    def layer(normalized_shape=[1], eps=1e-05, elementwise_affine=True):
+        return Normalization.LAYER(normalized_shape=normalized_shape, eps=eps, elementwise_affine=elementwise_affine)
+    @staticmethod
+    def group(num_groups=4, num_channels=1, affine=True):
+        return Normalization.GROUP(num_groups=num_groups, num_channels=num_channels, affine=affine)
+    @staticmethod
+    def syncbatch(num_features, eps=1e-5, momentum=0.1, affine=True, track_running_stats=True):
+        return Normalization.SYNCBATCH(num_features=num_features, eps=eps, momentum=momentum, affine=affine, track_running_stats=track_running_stats)
 
-        return a[self.value]
+    def get_layer(self)->nn.Module:
+        n : nn.Module 
+        match self:
+            case Normalization.INSTANCE(dim, num_features, affine):
+                dim_assertion(dim)
+                norms = [nn.InstanceNorm1d, nn.InstanceNorm2d, nn.InstanceNorm3d]
+                n =  norms[dim-1](num_features=num_features, affine=affine)
+            case Normalization.BATCH(dim, num_features):
+                dim_assertion(dim)
+                norms = [nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d]
+                n =  norms[dim-1](num_features=num_features)
+            # ! note: ensure torch._C._jit_set_nvfuser_enabled(True)
+            # case Normalization.INSTANCE_NVFUSER(dim, num_features, affine):
+            #     dim_assertion(dim)
+            #     norms = [nn.InstanceNorm1d, nn.InstanceNorm2d, nn.InstanceNorm3d]
+            #     n =  norms[dim-1](num_features=num_features, affine=affine, track_running_stats=False)
+            case Normalization.LOCALRESPONSE(size, alpha, beta, k):
+                n =  nn.LocalResponseNorm(size=size, alpha=alpha, beta=beta, k=k)
+            case Normalization.LAYER(normalized_shape, eps, elementwise_affine):
+                n =  nn.LayerNorm(normalized_shape=normalized_shape, eps=eps, elementwise_affine=elementwise_affine)
+            case Normalization.GROUP(num_groups, num_channels, affine):
+                n =  nn.GroupNorm(num_groups=num_groups, num_channels=num_channels, affine=affine)
+            case Normalization.SYNCBATCH(num_features, eps, momentum, affine, track_running_stats):
+                n =  nn.SyncBatchNorm(num_features=num_features, eps=eps, momentum=momentum, affine=affine, track_running_stats=track_running_stats)
+        return n
 
-class Normalization(Enum):
-    INSTANCE = 0
-    BATCH = 1
-    INSTANCE_NVFUSER = 2
-    LOCALRESPONSE = 3
-    LAYER = 4
-    GROUP = 5
-    SYNCBATCH = 6
-
-    def norm(self)->str:
-        n = [('INSTANCE', {"affine":True}),
-             'BATCH', 'INSTANCE_NVFUSER', 'LOCALRESPONSE', 'LAYER',
-              ('GROUP', {"num_groups": 4}), 'SYNCBATCH']
-        if self.value >= len(n):
-            raise NotImplementedError(f"normalization {self} is not implemented")
-
-        return n[self.value]
-
-def get_norm_layer(name: tuple | str, spatial_dims: int | None = 1, channels: int | None = 1):
-    """
-        from monai.networks.layers import get_norm_layer
-
-        g_layer = get_norm_layer(name=("group", {"num_groups": 1}))
-        n_layer = get_norm_layer(name="instance", spatial_dims=2)
-
-    Args:
-        name: a normalization type string or a tuple of type string and parameters.
-        spatial_dims: number of spatial dimensions of the input.
-        channels: number of features/channels when the normalization layer requires this parameter
-            but it is not specified in the norm parameters.
-    """
-    if name == "":
-        return torch.nn.Identity()
-    norm_name, norm_args = split_args(name)
-    norm_type = Norm[norm_name, spatial_dims]
-    kw_args = dict(norm_args)
-    if has_option(norm_type, "num_features") and "num_features" not in kw_args:
-        kw_args["num_features"] = channels
-    if has_option(norm_type, "num_channels") and "num_channels" not in kw_args:
-        kw_args["num_channels"] = channels
-    return norm_type(**kw_args)
-
-def get_act_layer(name: tuple | str):
-    """
-        from monai.networks.layers import get_act_layer
-
-        s_layer = get_act_layer(name="swish")
-        p_layer = get_act_layer(name=("prelu", {"num_parameters": 1, "init": 0.25}))
-
-    Args:
-        name: an activation type string or a tuple of type string and parameters.
-    """
-    if name == "":
-        return torch.nn.Identity()
-    act_name, act_args = split_args(name)
-    act_type = Act[act_name]
-    return act_type(**act_args)
-
-def get_dropout_layer(name: tuple | str | float | int, dropout_dim: int | None = 1):
-    """
-        from monai.networks.layers import get_dropout_layer
-
-        d_layer = get_dropout_layer(name="dropout")
-        a_layer = get_dropout_layer(name=("alphadropout", {"p": 0.25}))
-
-    Args:
-        name: a dropout ratio or a tuple of dropout type and parameters.
-        dropout_dim: the spatial dimension of the dropout operation.
-    """
-    if name == "":
-        return torch.nn.Identity()
-    if isinstance(name, (int, float)):
-        # if dropout was specified simply as a p value, use default name and make a keyword map with the value
-        drop_name = Dropout.DROPOUT
-        drop_args = {"p": float(name)}
-    else:
-        drop_name, drop_args = split_args(name)
-    drop_type = Dropout[drop_name, dropout_dim]
-    return drop_type(**drop_args)
-
-
-def get_pool_layer(name: tuple | str, spatial_dims: int | None = 1):
-    """
-    Create a pooling layer instance.
-
-    For example, to create adaptiveavg layer:
-
-    .. code-block:: python
-
-        from monai.networks.layers import get_pool_layer
-
-        pool_layer = get_pool_layer(("adaptiveavg", {"output_size": (1, 1, 1)}), spatial_dims=3)
-
-    Args:
-        name: a pooling type string or a tuple of type string and parameters.
-        spatial_dims: number of spatial dimensions of the input.
-
-    """
-    if name == "":
-        return torch.nn.Identity()
-    pool_name, pool_args = split_args(name)
-    pool_type = Pool[pool_name, spatial_dims]
-    return pool_type(**pool_args)
-
+def get_dropout_layer(dim:int, p:Optional[float], inplace:bool=True)->nn.Dropout1d|nn.Dropout2d|nn.Dropout3d:
+    dim_assertion(dim)
+    dropout_layer = (nn.Dropout1d, nn.Dropout2d ,nn.Dropout3d)[dim-1]
+    if p is not None:
+        dropout_layer = partial(dropout_layer, p=p)
+    return dropout_layer(inplace=inplace)
 
 class ADN(nn.Sequential):
     def __init__(
             self,
             ordering='NDA',
-            in_channels: int | None = None,
-            act: tuple | str | None = "RELU",
-            norm: tuple | str | None = None,
-            norm_dim: int | None = None,
-            dropout: tuple | str | float | None = None,
-            dropout_dim: int | None = None):
+            in_channels: int | None = None, # will be used as num_features or num_channels for normalization if not specified in norm args
+            act: Activation = Activation.relu(),
+            norm: Normalization | None = None,
+            dropout_dim: int | None = None,
+            dropout_prob: float | None = None,
+            ):
         super().__init__()
-        op_dict = {"A": None, "D": None, "N": None}
-        # define the normalization type and the arguments to the constructor
+        op_dict : dict[str, nn.Module| None] = {"A": act.get_layer(), "D": None, "N": None}
         if norm is not None:
-            if norm_dim is None and dropout_dim is None:
-                raise ValueError("norm_dim or dropout_dim needs to be specified.")
-            op_dict["N"] = get_norm_layer(name=norm, spatial_dims=norm_dim or dropout_dim, channels=in_channels)
+            op_dict["N"] = norm.get_layer() # get_norm_layer(name=norm, spatial_dims=norm_dim or dropout_dim, channels=in_channels)
 
-        # define the activation type and the arguments to the constructor
-        if act is not None:
-            op_dict["A"] = get_act_layer(act)
-
-        if dropout is not None:
-            if norm_dim is None and dropout_dim is None:
-                raise ValueError("norm_dim or dropout_dim needs to be specified.")
-            op_dict["D"] = get_dropout_layer(name=dropout, dropout_dim=dropout_dim or norm_dim)
+        if dropout_dim is not None:
+            op_dict["D"] = get_dropout_layer(dropout_dim, dropout_prob)
 
         for item in ordering.upper():
             if item not in op_dict:

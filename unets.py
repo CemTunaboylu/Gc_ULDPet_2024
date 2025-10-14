@@ -1,16 +1,19 @@
-from re import U
+from collections import namedtuple
 from typing import Callable, List, Optional, Sequence, Tuple, Union
+from functools import partial
+
 import torch
 from torch import nn
 F = nn.functional
 import einops
 
 from adn import Activation, ADN, Normalization 
-from layers import Encoder, NConv, inject_film_wrapper_to
+from encoder import Encoder
+from film import inject_film_wrapper_to
+from layers import NConv, inject_film_wrapper_to
 from monster import MetadataNetwork
 from upscaler import UpSampling, ConcatenatingUpScaler
 
-from collections import namedtuple
 
 class Features:
     def __init__(self, encoder: Sequence[int]):
@@ -20,8 +23,6 @@ class Features:
         for in_f, out_f in zip(self.encoder[:-1], self.encoder[1:]):
             yield in_f, out_f
 
-# TODO: I can also implement the loop with a method as an iterator to make it more readable
-
 DEFAULT_FEATURES = Features(encoder=[32, 64, 128, 256])
 
 class Unet3DEncoders(nn.Module):
@@ -30,22 +31,24 @@ class Unet3DEncoders(nn.Module):
             spatial_dims: int = 3,
             in_channels: int = 1,
             features: Features = DEFAULT_FEATURES,
-            actv: Activation = Activation.PRELU,
-            norm: Normalization = Normalization.INSTANCE,
+            actv: Activation = Activation.prelu(),
+            norm: Callable = partial(Normalization.instance),
             bias: bool = True,
-            dropout: float = 0.0,
+            dropout_prob: float | None = None,
             pre_init_f_inplace: Union[Callable[[Encoder], None],None] = None,
             ):
         super().__init__()
         encoders = nn.ModuleList()
 
-        init = Encoder(spatial_dims, in_channels, features.encoder[0], actv, norm=norm, bias=bias, dropout=dropout)
+        # which features? in our out
+        init_features = features.encoder[0]
+        init = Encoder(spatial_dims, in_channels, init_features, act=actv, norm=norm, bias=bias, dropout_prob=dropout_prob)
         if pre_init_f_inplace is not None:
             pre_init_f_inplace(init)
         encoders.append(init)
 
         for in_f, out_f in features:
-            e = Encoder(spatial_dims, in_f, out_f, actv, norm=norm, bias=bias, dropout=dropout)
+            e = Encoder(spatial_dims, in_f, out_f, act=actv, norm=norm, bias=bias, dropout_prob=dropout_prob)
             if pre_init_f_inplace is not None:
                 pre_init_f_inplace(e)
             encoders.append(e)
@@ -54,6 +57,7 @@ class Unet3DEncoders(nn.Module):
 
     def encode(self, x: torch.Tensor)-> Tuple[torch.Tensor, List[torch.Tensor]]:
         skips = [torch.empty(0)] * len(self.encoders)
+        # ! todo: can I vectorize this?
         for ix, encoder in enumerate(self.encoders):
             x = encoder.encode(x)
             skips[ix] = x
@@ -76,23 +80,24 @@ class Unet3DDecoders(nn.Module):
             spatial_dims: int = 3,
             out_channels: int = 1,
             features: Features = DEFAULT_FEATURES,
-            actv: Activation = Activation.PRELU,
-            norm: Normalization = Normalization.INSTANCE,
+            actv: Activation = Activation.prelu(),
+            norm: Callable = partial(Normalization.instance),
             bias: bool = True,
-            dropout: float = 0.0,
+            dropout_prob: float | None = None,
             up_sampling: UpSampling = UpSampling.DECONV,
             ):
         super().__init__()
         decoders = nn.ModuleList()
         for in_f, out_f in features:
+            # ! todo: refactor for new ADN
             cus = ConcatenatingUpScaler(spatial_dims, in_chan = out_f, cat_chan = out_f, out_chan = in_f, actv = actv, 
-                    up_sampling = up_sampling, norm = norm, bias = bias, dropout = dropout, halves = True)
+                    up_sampling = up_sampling, norm = norm, bias = bias, dropout_prob = dropout_prob, halves = True)
                     # up_sampling=up_sampling, norm=norm, bias=bias, dropout=dropout, halves = False)
             decoders.insert(0, cus)
 
         # final = NConv(spatial_dims, features.encoder[0], out_channels, actv, norm, bias, dropout=dropout, pooling=None)
         final = ConcatenatingUpScaler(spatial_dims, in_chan = features.encoder[0], cat_chan = features.encoder[0], out_chan = out_channels, actv = actv, 
-                    up_sampling = up_sampling, norm = norm, bias = bias, dropout = dropout, halves = True)
+                    up_sampling = up_sampling, norm = norm, bias = bias, dropout_prob = dropout_prob, halves = True)
                     # up_sampling=up_sampling, norm=norm, bias=bias, dropout=dropout, halves=False)
         decoders.append(final)
         self.decoders = decoders
@@ -113,10 +118,10 @@ class UNet3D(nn.Module):
             in_channels: int = 1,
             out_channels: int = 1,
             features: Features = DEFAULT_FEATURES,
-            actv: Activation = Activation.PRELU,
-            norm: Normalization = Normalization.INSTANCE,
+            actv: Activation = Activation.prelu(),
+            norm: Callable = partial(Normalization.instance),
             bias: bool = True,
-            dropout: float = 0.0,
+            dropout_prob: float | None = None,
             up_sampling: UpSampling = UpSampling.DECONV,
             ):
         super().__init__()
@@ -128,11 +133,12 @@ class UNet3D(nn.Module):
             actv=actv,
             norm=norm,
             bias=bias,
-            dropout=dropout)
+            dropout_prob=dropout_prob
+        )
         self.add_module("encoders", self.encoders)
 
         bottleneck_chan = features.encoder[-1]
-        self.bottleneck = NConv(spatial_dims, bottleneck_chan, bottleneck_chan, actv, norm, bias, dropout=dropout)
+        self.bottleneck = NConv(spatial_dims, bottleneck_chan, bottleneck_chan, act=actv, norm=norm, bias=bias, dropout_prob=dropout_prob)
         self.add_module("bottleneck", self.bottleneck)
 
         self.decoders = Unet3DDecoders(
@@ -142,7 +148,7 @@ class UNet3D(nn.Module):
             actv=actv,
             norm=norm,
             bias=bias,
-            dropout=dropout,
+            dropout_prob=dropout_prob,
             up_sampling=up_sampling)
         self.add_module("decoders", self.decoders)
 
@@ -177,10 +183,10 @@ class FiLMed3DUNet(nn.Module):
             in_channels: int = 1,
             out_channels: int = 1,
             features: Features = DEFAULT_FEATURES,
-            actv: Activation = Activation.PRELU,
-            norm: Normalization = Normalization.INSTANCE,
+            actv: Activation = Activation.prelu(),
+            norm: Callable = partial(Normalization.instance),
             bias: bool = True,
-            dropout: float = 0.0,
+            dropout_prob: float = 0.0,
             up_sampling: UpSampling = UpSampling.DECONV,
             dimensions: Optional[int] = None,
             amp: bool = True,
@@ -200,13 +206,13 @@ class FiLMed3DUNet(nn.Module):
             actv=actv,
             norm=norm,
             bias=bias,
-            dropout=dropout,
+            dropout_prob=dropout_prob,
             pre_init_f_inplace=inject_film_wrapper_to,
             )
         self.add_module("filmed_layers", self.filmed_layers)
 
         bottleneck_chan = features.encoder[-1]
-        self.bottleneck = NConv(spatial_dims, bottleneck_chan, bottleneck_chan, actv, norm, bias, dropout=dropout)
+        self.bottleneck = NConv(spatial_dims, bottleneck_chan, bottleneck_chan, act=actv, norm=norm, bias=bias, dropout_prob=dropout_prob)
         self.add_module("bottleneck", self.bottleneck)
 
         self.decoders = Unet3DDecoders(
@@ -216,7 +222,7 @@ class FiLMed3DUNet(nn.Module):
             actv=actv,
             norm=norm,
             bias=bias,
-            dropout=dropout,
+            dropout_prob=dropout_prob,
             up_sampling=up_sampling)
         self.add_module("decoders", self.decoders)
 

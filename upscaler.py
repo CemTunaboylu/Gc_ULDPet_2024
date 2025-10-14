@@ -1,5 +1,6 @@
 from enum import Enum
-from typing import Optional, Tuple, Union
+from functools import partial
+from typing import Callable, Optional, Tuple, Union
 
 import torch 
 from torch import nn
@@ -7,13 +8,14 @@ from torch import nn
 from adn import Activation, Normalization
 from layers import NConv
 
-from MONAI.monai.networks.blocks import UpSample
-
 class UpSampling(Enum):
     # NEAREST_NEIGHBOR, BILINEAR
     DECONV = "deconv"
     PIXEL_SHUFFLE = "pixelshuffle"
     NON_TRAINABLE = "nontrainable"
+
+    def is_non_trainable(self):
+        return self == UpSampling.NON_TRAINABLE
 
     def __str__(self):
         return self.value
@@ -26,9 +28,9 @@ class ConcatenatingUpScaler(nn.Sequential):
             cat_chan: int,
             out_chan: int,
             actv: Activation,
-            norm: Normalization = Normalization.INSTANCE,
+            norm: Callable = partial(Normalization.instance),
             bias: bool = True,
-            dropout: float = 0.0,
+            dropout_prob: float = 0.0,
             up_sampling: UpSampling = UpSampling.DECONV,
             # TODO: make this better
             # pre_conv: a conv block applied before upsampling. - only used in the "nontrainable" or "pixelshuffle" mode.
@@ -47,7 +49,7 @@ class ConcatenatingUpScaler(nn.Sequential):
         self.spatial_dims = spatial_dims
 
         up_chan : int 
-        if UpSampling.NON_TRAINABLE.value == up_sampling.value and pre_conv is None:
+        if up_sampling.is_non_trainable() and pre_conv is None:
             up_chan = in_chan
         elif halves:
             up_chan = in_chan//2
@@ -66,7 +68,7 @@ class ConcatenatingUpScaler(nn.Sequential):
             align_corners=align_corners
             )
 
-        self.convs = NConv(spatial_dims, cat_chan + up_chan, out_chan, actv, norm, bias, dropout=dropout)
+        self.convs = NConv(spatial_dims, cat_chan + up_chan, out_chan, act=actv, norm=norm, bias=bias, dropout_prob=dropout_prob)
 
     def forward(self, x: torch.Tensor, skip:Union[torch.Tensor, None] = None):
         x = self.upsample(x)
