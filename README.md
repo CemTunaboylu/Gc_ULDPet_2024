@@ -8,21 +8,21 @@
  This project supposed to be my submission and research playground for the **Ultra-Low Dose PET (ULDPET) Image Reconstruction Challenge**, which aims to improve the quality of PET images acquired with significantly reduced radiotracer dose. Unfortunately, due to some misfortunate events, I could not finish and submit my work. Nevertheless, I am back to building it to discover if what I thought will work or not. This is a research-oriented project, with which I want to explore and think about novel deep learning strategies for denoising ultra-low-dose PET scans using hybrid convolutional kernels and interleaved depth-wise separable convolutions (will explain this later) with some sprinkle of FiLM. 🚀
 
 
-## 🧠 Motivation
+## Motivation
 
 - PET imaging is crucial in clinical diagnostics, but the radioactive tracers impose health risks and limit scan frequency.
 - The goal is to **reconstruct high-quality images** from extremely noisy, ultra-low dose inputs.
 - I believe we can further tailor neural architectures to exploit the inherent **spatial and statistical priors** of PET data more effectively than off-the-shelf networks.
 
-## 🧪 Implemented Methods
+## Implemented Methods
 
-- ✅ Custom U-Net with adaptive kernel sizes
-- ✅ Deep supervision with hierarchical loss
-- ✅ Efficient dataset pipeline using **Parquet** and **Zarr**
-- ✅ Multi-GPU and mixed precision training via PyTorch Lightning
-- ✅ On-the-fly synthetic degradation for data augmentation
+- Custom U-Net with adaptive kernel sizes
+- Deep supervision with hierarchical loss
+- Efficient dataset pipeline using **Parquet** and **Zarr**
+- Multi-GPU and mixed precision training via PyTorch Lightning
+- On-the-fly synthetic degradation for data augmentation
 
-## 🧪 Planned Experiments
+## Planned Experiments
 
 - [ ] **Depth-wise separable convolutions** to reduce parameter count without losing spatial sensitivity.
 - [ ] **Interleaving Depth-wise separable convolutions** for recovering cut information flow among separated groups  (I vectorized this but not sure if pytorch will be able to optimize this further)
@@ -32,13 +32,13 @@
 - [ ] **Zarr + Dask pipeline** for scalable I/O and distributed training.
 - [ ] **Noise injection during training** for robustness and uncertainty calibration.
 
-## 🧬 Data Preprocessing
+## Data Preprocessing
 
 - Preprocessing supports DICOM and IMA series using `SimpleITK`, with optional reorientation and normalization.
 - Volumes are normalized to `[0, 65535]` and saved in efficient NumPy or Zarr formats.
 - Parallel loading and memory monitoring are implemented via multiprocessing.
 
-## 📦 Project Structure
+## Project Structure
 ```
 GC_ULDPET_2024/
 ├── tests
@@ -55,34 +55,34 @@ GC_ULDPET_2024/
 ```
 ---
 
-## 💡 Experimental & Planned Ideas
+## Experimental & Planned Ideas
 
 These are promising directions to be explored next:
 
-- 🔄 **Mixture of kernels**: Combining standard, dilated, and separable convolutions in parallel per layer.
-- 🔀 **Interleaved depth-wise convolution layers**: Overlapping volumetric slices to enhance spatial-spectral mixing.
-- 🧼 **Learnable pooling**: Replace max/avg pooling with pooling functions chosen and learned network.
-- 🧠 **Information bottleneck-based denoising**: Investigating variational dropout to retain only essential signals.
-- 🧊 **Progressive training with cold-start curriculum**: Start with noise-free patches and increase noise gradually. Explore variations of transitions from soft to hard gating. 
+- **Mixture of kernels**: Combining standard, dilated, and separable convolutions in parallel per layer.
+- **Interleaved depth-wise convolution layers**: Overlapping volumetric slices to enhance spatial-spectral mixing.
+- **Learnable pooling**: Replace max/avg pooling with pooling functions chosen and learned network.
+- **Information bottleneck-based denoising**: Investigating variational dropout to retain only essential signals.
+- **Progressive training with cold-start curriculum**: Start with noise-free patches and increase noise gradually. Explore variations of transitions from soft to hard gating. 
 
-## 🤝 Contributing
+## Contributing
 
 Contributions are welcome — especially around the experimental ideas!
-If you'd like to contribute or implement one of these ideas, see the [Contribution Guide](#🤝-contributing). Then pick an idea from the 💡 Planned Ideas section and start hacking!
+If you'd like to contribute or implement one of these ideas, see the [Contribution Guide](#contributing). Then pick an idea from the Planned Ideas section and start hacking!
 
-## 📊 Evaluation
+## Evaluation
 I will include:
 - Visual comparison plots
 - Per-region performance analysis
 - Runtime and memory profiling
 
-## ⚠️ Known Issues
+## Known Issues
 - Currently requires inputs with dimensions divisible by 16 (due to max pooling).
 - FiLM layers may break if metadata shape mismatches batch size.
 - Padding assumes small differences in shape (±1) between tensors.
 
 
-## 📁 Dataset & Preprocessing
+## Dataset & Preprocessing
 I currently focused on
 - Structural preservation (via SSIM filtering)
 - Spatial normalization (rotation handling)
@@ -122,5 +122,5 @@ Ultra-low dose PET scans and full-dose counterparts are converted and preprocess
 - Dataset split into train/val/test using a deterministic hash of subject IDs
 
 
-## 📄 License
+## License
 This project is licensed under the terms of the [GNU General Public License v2.0](https://www.gnu.org/licenses/old-licenses/gpl-2.0.html).
